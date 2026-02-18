@@ -195,8 +195,56 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
   }
 
   async generateObject<T>(input: GenerateObjectInput): Promise<T> {
-    const response = await this.openAIClient.chat.completions.parse({
-      messages: this.convertToOpenAIMessages(input.messages),
+    try {
+      const response = await this.openAIClient.chat.completions.parse({
+        messages: this.convertToOpenAIMessages(input.messages),
+        model: this.config.model,
+        temperature:
+          input.options?.temperature ?? this.config.options?.temperature ?? 1.0,
+        top_p: input.options?.topP ?? this.config.options?.topP,
+        max_completion_tokens:
+          input.options?.maxTokens ?? this.config.options?.maxTokens,
+        stop: input.options?.stopSequences ?? this.config.options?.stopSequences,
+        frequency_penalty:
+          input.options?.frequencyPenalty ??
+          this.config.options?.frequencyPenalty,
+        presence_penalty:
+          input.options?.presencePenalty ?? this.config.options?.presencePenalty,
+        response_format: zodResponseFormat(input.schema, 'object'),
+      });
+
+      return this.parseObjectResponse<T>(input, response);
+    } catch (err: unknown) {
+      if (
+        err instanceof Error &&
+        'status' in err &&
+        (err as { status: number }).status === 400 &&
+        err.message.includes('json_schema')
+      ) {
+        return this.generateObjectWithJsonMode<T>(input);
+      }
+      throw err;
+    }
+  }
+
+  private async generateObjectWithJsonMode<T>(
+    input: GenerateObjectInput,
+  ): Promise<T> {
+    const jsonSchema = z.toJSONSchema(input.schema);
+    const schemaInstruction = `\n\nRespond with a valid JSON object matching this schema:\n${JSON.stringify(jsonSchema)}\n\nRespond ONLY with the JSON object.`;
+
+    const messages = this.convertToOpenAIMessages(input.messages);
+    if (messages.length > 0 && messages[0].role === 'system') {
+      messages[0] = {
+        ...messages[0],
+        content: (messages[0].content as string) + schemaInstruction,
+      };
+    } else {
+      messages.unshift({ role: 'system', content: schemaInstruction.trim() });
+    }
+
+    const response = await this.openAIClient.chat.completions.create({
+      messages,
       model: this.config.model,
       temperature:
         input.options?.temperature ?? this.config.options?.temperature ?? 1.0,
@@ -209,9 +257,16 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
         this.config.options?.frequencyPenalty,
       presence_penalty:
         input.options?.presencePenalty ?? this.config.options?.presencePenalty,
-      response_format: zodResponseFormat(input.schema, 'object'),
+      response_format: { type: 'json_object' },
     });
 
+    return this.parseObjectResponse<T>(input, response);
+  }
+
+  private parseObjectResponse<T>(
+    input: GenerateObjectInput,
+    response: { choices: { message: { content: string | null } }[] },
+  ): T {
     if (response.choices && response.choices.length > 0) {
       try {
         return input.schema.parse(

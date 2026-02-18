@@ -24,6 +24,12 @@ export const searchSearxng = async (
 ) => {
   const searxngURL = getSearxngURL();
 
+  if (!searxngURL) {
+    throw new Error(
+      'SearXNG URL is not configured. Set it in Settings or via SEARXNG_API_URL env var.',
+    );
+  }
+
   const url = new URL(`${searxngURL}/search?format=json`);
   url.searchParams.append('q', query);
 
